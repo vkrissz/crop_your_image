@@ -17,6 +17,10 @@ class CropController {
   /// When image is changed, [Rect] of cropping area will be reset.
   set image(Uint8List value) => _delegate.onImageChanged(value);
 
+  /// Change the image rotation.
+  /// When rotation is changed, [Rect] of cropping area will be reset.
+  void rotateBy(double value) => _delegate.onRotateBy(value);
+
   /// change fixed aspect ratio
   /// if [value] is null, cropping area can be moved without fixed aspect ratio.
   set aspectRatio(double? value) => _delegate.onChangeAspectRatio(value);
@@ -41,6 +45,9 @@ class CropControllerDelegate {
 
   /// callback that [CropController.image] is set.
   late ValueChanged<Uint8List> onImageChanged;
+
+  /// callback that [CropController.image] is set.
+  late ValueChanged<double> onRotateBy;
 
   /// callback that [CropController.aspectRatio] is set.
   late ValueChanged<double?> onChangeAspectRatio;

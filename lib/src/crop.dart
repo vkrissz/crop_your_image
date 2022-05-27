@@ -2,10 +2,11 @@ part of crop_your_image;
 
 const dotTotalSize = 32.0; // fixed corner dot size.
 
-typedef CornerDotBuilder = Widget Function(
-    double size, EdgeAlignment edgeAlignment);
+typedef CornerDotBuilder = Widget Function(double size, EdgeAlignment edgeAlignment);
 
 typedef CroppingAreaBuilder = Rect Function(Rect imageRect);
+
+typedef ImageEncoder = List<int> Function(image.Image);
 
 enum CropStatus { nothing, loading, ready, cropping }
 
@@ -84,6 +85,7 @@ class Crop extends StatelessWidget {
   /// If [true], users can move and zoom image.
   /// [false] by default.
   final bool interactive;
+  final ImageEncoder? encoder;
 
   const Crop({
     Key? key,
@@ -103,8 +105,8 @@ class Crop extends StatelessWidget {
     this.cornerDotBuilder,
     this.fixArea = false,
     this.interactive = false,
-  })  : assert((initialSize ?? 1.0) <= 1.0,
-            'initialSize must be less than 1.0, or null meaning not specified.'),
+    this.encoder,
+  })  : assert((initialSize ?? 1.0) <= 1.0, 'initialSize must be less than 1.0, or null meaning not specified.'),
         super(key: key);
 
   @override
@@ -133,6 +135,7 @@ class Crop extends StatelessWidget {
             cornerDotBuilder: cornerDotBuilder,
             fixArea: fixArea,
             interactive: interactive,
+            encoder: encoder,
           ),
         );
       },
@@ -157,6 +160,7 @@ class _CropEditor extends StatefulWidget {
   final CornerDotBuilder? cornerDotBuilder;
   final bool fixArea;
   final bool interactive;
+  final ImageEncoder? encoder;
 
   const _CropEditor({
     Key? key,
@@ -176,6 +180,7 @@ class _CropEditor extends StatefulWidget {
     this.cornerDotBuilder,
     required this.fixArea,
     required this.interactive,
+    this.encoder,
   }) : super(key: key);
 
   @override
@@ -186,18 +191,17 @@ class _CropEditorState extends State<_CropEditor> {
   late CropController _cropController;
   late Rect _rect;
   image.Image? _targetImage;
+  late Uint8List _encodedImageBytes;
   late Rect _imageRect;
 
   double? _aspectRatio;
   bool _withCircleUi = false;
   bool _isFitVertically = false;
-  Future<image.Image?>? _lastComputed;
+  Future<dynamic>? _lastComputed;
 
   bool get _isImageLoading => _lastComputed != null;
 
-  _Calculator get calculator => _isFitVertically
-      ? const _VerticalCalculator()
-      : const _HorizontalCalculator();
+  _Calculator get calculator => _isFitVertically ? const _VerticalCalculator() : const _HorizontalCalculator();
 
   set rect(Rect newRect) {
     setState(() {
@@ -262,25 +266,17 @@ class _CropEditorState extends State<_CropEditor> {
 
     // width
     final newWidth = baseWidth * nextScale;
-    final horizontalFocalPointBias = focalPoint == null
-        ? 0.5
-        : (focalPoint.dx - _imageRect.left) / _imageRect.width;
-    final leftPositionDelta =
-        (newWidth - _imageRect.width) * horizontalFocalPointBias;
+    final horizontalFocalPointBias = focalPoint == null ? 0.5 : (focalPoint.dx - _imageRect.left) / _imageRect.width;
+    final leftPositionDelta = (newWidth - _imageRect.width) * horizontalFocalPointBias;
 
     // height
     final newHeight = baseHeight * nextScale;
-    final verticalFocalPointBias = focalPoint == null
-        ? 0.5
-        : (focalPoint.dy - _imageRect.top) / _imageRect.height;
-    final topPositionDelta =
-        (newHeight - _imageRect.height) * verticalFocalPointBias;
+    final verticalFocalPointBias = focalPoint == null ? 0.5 : (focalPoint.dy - _imageRect.top) / _imageRect.height;
+    final topPositionDelta = (newHeight - _imageRect.height) * verticalFocalPointBias;
 
     // position
-    final newLeft = max(min(_rect.left, _imageRect.left - leftPositionDelta),
-        _rect.right - newWidth);
-    final newTop = max(min(_rect.top, _imageRect.top - topPositionDelta),
-        _rect.bottom - newHeight);
+    final newLeft = max(min(_rect.left, _imageRect.left - leftPositionDelta), _rect.right - newWidth);
+    final newTop = max(min(_rect.top, _imageRect.top - topPositionDelta), _rect.bottom - newHeight);
 
     if (newWidth < _rect.width || newHeight < _rect.height) {
       return;
@@ -310,6 +306,7 @@ class _CropEditorState extends State<_CropEditor> {
         _resizeWith(null, null);
       }
       ..onImageChanged = _resetImage
+      ..onRotateBy = _applyRotation
       ..onChangeRect = (newRect) {
         rect = calculator.correct(newRect, _imageRect);
       }
@@ -322,6 +319,7 @@ class _CropEditorState extends State<_CropEditor> {
 
   @override
   void didChangeDependencies() {
+    _encodedImageBytes = widget.image;
     final future = compute(_fromByteData, widget.image);
     _lastComputed = future;
     future.then((converted) {
@@ -348,6 +346,24 @@ class _CropEditorState extends State<_CropEditor> {
       if (_lastComputed == future) {
         setState(() {
           _targetImage = converted;
+          _lastComputed = null;
+        });
+        _resetCroppingArea();
+        widget.onStatusChanged?.call(CropStatus.ready);
+      }
+    });
+  }
+
+  /// rotate the image
+  void _applyRotation(double angle) {
+    widget.onStatusChanged?.call(CropStatus.loading);
+    final future = compute(_rotateImage, _RotateImageParams(_targetImage!, angle));
+    _lastComputed = future;
+    future.then((converted) {
+      if (_lastComputed == future) {
+        setState(() {
+          _targetImage = converted.rotatedImage;
+          _encodedImageBytes = converted.rotatedEncodedImage;
           _lastComputed = null;
         });
         _resetCroppingArea();
@@ -421,7 +437,7 @@ class _CropEditorState extends State<_CropEditor> {
     // use compute() not to block UI update
     final cropResult = await compute(
       withCircleShape ? _doCropCircle : _doCrop,
-      [
+      _CropData(
         _targetImage!,
         Rect.fromLTWH(
           (_rect.left - _imageRect.left) * screenSizeRatio / _scale,
@@ -429,7 +445,8 @@ class _CropEditorState extends State<_CropEditor> {
           _rect.width * screenSizeRatio / _scale,
           _rect.height * screenSizeRatio / _scale,
         ),
-      ],
+        widget.encoder,
+      ),
     );
     widget.onCropped(cropResult);
 
@@ -458,13 +475,9 @@ class _CropEditorState extends State<_CropEditor> {
                           left: _imageRect.left,
                           top: _imageRect.top,
                           child: Image.memory(
-                            widget.image,
-                            width: _isFitVertically
-                                ? null
-                                : MediaQuery.of(context).size.width * _scale,
-                            height: _isFitVertically
-                                ? MediaQuery.of(context).size.height * _scale
-                                : null,
+                            _encodedImageBytes,
+                            width: _isFitVertically ? null : MediaQuery.of(context).size.width * _scale,
+                            height: _isFitVertically ? MediaQuery.of(context).size.height * _scale : null,
                             fit: BoxFit.contain,
                           ),
                         ),
@@ -475,9 +488,7 @@ class _CropEditorState extends State<_CropEditor> {
               ),
               IgnorePointer(
                 child: ClipPath(
-                  clipper: _withCircleUi
-                      ? _CircleCropAreaClipper(_rect)
-                      : _CropAreaClipper(_rect, widget.radius),
+                  clipper: _withCircleUi ? _CircleCropAreaClipper(_rect) : _CropAreaClipper(_rect, widget.radius),
                   child: Container(
                     width: double.infinity,
                     height: double.infinity,
@@ -520,9 +531,7 @@ class _CropEditorState extends State<_CropEditor> {
                             _aspectRatio,
                           );
                         },
-                  child: widget.cornerDotBuilder
-                          ?.call(dotTotalSize, EdgeAlignment.topLeft) ??
-                      const DotControl(),
+                  child: widget.cornerDotBuilder?.call(dotTotalSize, EdgeAlignment.topLeft) ?? const DotControl(),
                 ),
               ),
               Positioned(
@@ -540,9 +549,7 @@ class _CropEditorState extends State<_CropEditor> {
                             _aspectRatio,
                           );
                         },
-                  child: widget.cornerDotBuilder
-                          ?.call(dotTotalSize, EdgeAlignment.topRight) ??
-                      const DotControl(),
+                  child: widget.cornerDotBuilder?.call(dotTotalSize, EdgeAlignment.topRight) ?? const DotControl(),
                 ),
               ),
               Positioned(
@@ -560,9 +567,7 @@ class _CropEditorState extends State<_CropEditor> {
                             _aspectRatio,
                           );
                         },
-                  child: widget.cornerDotBuilder
-                          ?.call(dotTotalSize, EdgeAlignment.bottomLeft) ??
-                      const DotControl(),
+                  child: widget.cornerDotBuilder?.call(dotTotalSize, EdgeAlignment.bottomLeft) ?? const DotControl(),
                 ),
               ),
               Positioned(
@@ -580,9 +585,7 @@ class _CropEditorState extends State<_CropEditor> {
                             _aspectRatio,
                           );
                         },
-                  child: widget.cornerDotBuilder
-                          ?.call(dotTotalSize, EdgeAlignment.bottomRight) ??
-                      const DotControl(),
+                  child: widget.cornerDotBuilder?.call(dotTotalSize, EdgeAlignment.bottomRight) ?? const DotControl(),
                 ),
               ),
             ],
@@ -602,17 +605,13 @@ class _CropAreaClipper extends CustomClipper<Path> {
       ..addPath(
         Path()
           ..moveTo(rect.left, rect.top + radius)
-          ..arcToPoint(Offset(rect.left + radius, rect.top),
-              radius: Radius.circular(radius))
+          ..arcToPoint(Offset(rect.left + radius, rect.top), radius: Radius.circular(radius))
           ..lineTo(rect.right - radius, rect.top)
-          ..arcToPoint(Offset(rect.right, rect.top + radius),
-              radius: Radius.circular(radius))
+          ..arcToPoint(Offset(rect.right, rect.top + radius), radius: Radius.circular(radius))
           ..lineTo(rect.right, rect.bottom - radius)
-          ..arcToPoint(Offset(rect.right - radius, rect.bottom),
-              radius: Radius.circular(radius))
+          ..arcToPoint(Offset(rect.right - radius, rect.bottom), radius: Radius.circular(radius))
           ..lineTo(rect.left + radius, rect.bottom)
-          ..arcToPoint(Offset(rect.left, rect.bottom - radius),
-              radius: Radius.circular(radius))
+          ..arcToPoint(Offset(rect.left, rect.bottom - radius), radius: Radius.circular(radius))
           ..close(),
         Offset.zero,
       )
@@ -680,17 +679,16 @@ class DotControl extends StatelessWidget {
 
 /// process cropping image.
 /// this method is supposed to be called only via compute()
-Uint8List _doCrop(List<dynamic> cropData) {
-  final originalImage = cropData[0] as image.Image;
-  final rect = cropData[1] as Rect;
+Uint8List _doCrop(_CropData data) {
+  final encoder = data.encoder ?? image.encodePng;
   return Uint8List.fromList(
-    image.encodePng(
+    encoder(
       image.copyCrop(
-        originalImage,
-        rect.left.toInt(),
-        rect.top.toInt(),
-        rect.width.toInt(),
-        rect.height.toInt(),
+        data.originalImage,
+        data.rect.left.toInt(),
+        data.rect.top.toInt(),
+        data.rect.width.toInt(),
+        data.rect.height.toInt(),
       ),
     ),
   );
@@ -698,19 +696,25 @@ Uint8List _doCrop(List<dynamic> cropData) {
 
 /// process cropping image with circle shape.
 /// this method is supposed to be called only via compute()
-Uint8List _doCropCircle(List<dynamic> cropData) {
-  final originalImage = cropData[0] as image.Image;
-  final rect = cropData[1] as Rect;
+Uint8List _doCropCircle(_CropData data) {
+  final encoder = data.encoder ?? image.encodePng;
   return Uint8List.fromList(
-    image.encodePng(
+    encoder(
       image.copyCropCircle(
-        originalImage,
-        center:
-            image.Point(rect.left + rect.width / 2, rect.top + rect.height / 2),
-        radius: min(rect.width, rect.height) ~/ 2,
+        data.originalImage,
+        center: image.Point(data.rect.left + data.rect.width / 2, data.rect.top + data.rect.height / 2),
+        radius: min(data.rect.width, data.rect.height) ~/ 2,
       ),
     ),
   );
+}
+
+class _CropData {
+  final image.Image originalImage;
+  final Rect rect;
+  final List<int> Function(image.Image)? encoder;
+
+  _CropData(this.originalImage, this.rect, this.encoder);
 }
 
 // decode orientation awared Image.
@@ -728,4 +732,25 @@ image.Image _fromByteData(Uint8List data) {
       return image.copyRotate(tempImage!, -90);
   }
   return tempImage!;
+}
+
+// rotate image and re-encode it for displaying it
+_RotateImageResult _rotateImage(_RotateImageParams params) {
+  final rotated = image.copyRotate(params.currentImage, params.angle);
+  final encoded = Uint8List.fromList(image.encodeJpg(rotated, quality: 70));
+  return _RotateImageResult(rotated, encoded);
+}
+
+class _RotateImageParams {
+  image.Image currentImage;
+  double angle;
+
+  _RotateImageParams(this.currentImage, this.angle);
+}
+
+class _RotateImageResult {
+  image.Image rotatedImage;
+  Uint8List rotatedEncodedImage;
+
+  _RotateImageResult(this.rotatedImage, this.rotatedEncodedImage);
 }
