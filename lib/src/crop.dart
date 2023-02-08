@@ -81,6 +81,10 @@ class Crop extends StatelessWidget {
   /// [false] by default.
   final bool fixArea;
 
+  /// [Widget] for showing preparing for image is in progress.
+  /// [SizedBox.shrink()] is used by default.
+  final Widget progressIndicator;
+
   /// * Experimental Feature *
   /// If [true], users can move and zoom image.
   /// [false] by default.
@@ -104,6 +108,7 @@ class Crop extends StatelessWidget {
     this.radius = 0,
     this.cornerDotBuilder,
     this.fixArea = false,
+    this.progressIndicator = const SizedBox.shrink(),
     this.interactive = false,
     this.encoder,
   })  : assert((initialSize ?? 1.0) <= 1.0, 'initialSize must be less than 1.0, or null meaning not specified.'),
@@ -134,6 +139,7 @@ class Crop extends StatelessWidget {
             radius: radius,
             cornerDotBuilder: cornerDotBuilder,
             fixArea: fixArea,
+            progressIndicator: progressIndicator,
             interactive: interactive,
             encoder: encoder,
           ),
@@ -159,6 +165,7 @@ class _CropEditor extends StatefulWidget {
   final double radius;
   final CornerDotBuilder? cornerDotBuilder;
   final bool fixArea;
+  final Widget progressIndicator;
   final bool interactive;
   final ImageEncoder? encoder;
 
@@ -179,6 +186,7 @@ class _CropEditor extends StatefulWidget {
     required this.radius,
     this.cornerDotBuilder,
     required this.fixArea,
+    required this.progressIndicator,
     required this.interactive,
     this.encoder,
   }) : super(key: key);
@@ -456,7 +464,7 @@ class _CropEditorState extends State<_CropEditor> {
   @override
   Widget build(BuildContext context) {
     return _isImageLoading
-        ? Center(child: const CircularProgressIndicator())
+        ? Center(child: widget.progressIndicator)
         : Stack(
             children: [
               Listener(
@@ -685,10 +693,10 @@ Uint8List _doCrop(_CropData data) {
     encoder(
       image.copyCrop(
         data.originalImage,
-        data.rect.left.toInt(),
-        data.rect.top.toInt(),
-        data.rect.width.toInt(),
-        data.rect.height.toInt(),
+        x: data.rect.left.toInt(),
+        y: data.rect.top.toInt(),
+        width: data.rect.width.toInt(),
+        height: data.rect.height.toInt(),
       ),
     ),
   );
@@ -702,7 +710,8 @@ Uint8List _doCropCircle(_CropData data) {
     encoder(
       image.copyCropCircle(
         data.originalImage,
-        center: image.Point(data.rect.left + data.rect.width / 2, data.rect.top + data.rect.height / 2),
+        centerX: (data.rect.left + data.rect.width / 2).round(),
+        centerY: (data.rect.top + data.rect.height / 2).round(),
         radius: min(data.rect.width, data.rect.height) ~/ 2,
       ),
     ),
@@ -723,20 +732,20 @@ image.Image _fromByteData(Uint8List data) {
   assert(tempImage != null);
 
   // check orientation
-  switch (tempImage?.exif.data[0x0112] ?? -1) {
+  switch (tempImage?.exif.exifIfd.orientation ?? -1) {
     case 3:
-      return image.copyRotate(tempImage!, 180);
+      return image.copyRotate(tempImage!, angle: 180);
     case 6:
-      return image.copyRotate(tempImage!, 90);
+      return image.copyRotate(tempImage!, angle: 90);
     case 8:
-      return image.copyRotate(tempImage!, -90);
+      return image.copyRotate(tempImage!, angle: -90);
   }
   return tempImage!;
 }
 
 // rotate image and re-encode it for displaying it
 _RotateImageResult _rotateImage(_RotateImageParams params) {
-  final rotated = image.copyRotate(params.currentImage, params.angle);
+  final rotated = image.copyRotate(params.currentImage, angle: params.angle);
   final encoded = Uint8List.fromList(image.encodeJpg(rotated, quality: 70));
   return _RotateImageResult(rotated, encoded);
 }
